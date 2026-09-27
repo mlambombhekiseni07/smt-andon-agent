@@ -8,20 +8,32 @@ st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
 st.caption("Enter updates naturally (e.g., 'Today we are producing 400 units for 719 CM')")
 
-# Required schedule columns
 REQUIRED_COLUMNS = [
     "Line", "WO_No", "QTY", "Priority", "Description", 
     "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
 ]
 
+def fix_private_key(raw_key: str) -> str:
+    """Reconstructs standard PEM RSA private key format from mangled secret strings."""
+    cleaned = raw_key.replace("-----BEGIN PRIVATE KEY-----", "")
+    cleaned = cleaned.replace("-----END PRIVATE KEY-----", "")
+    # Remove escaped backslashes, quotes, and whitespace
+    cleaned = cleaned.replace("\\n", "").replace("\\", "").replace('"', '').replace("'", "")
+    cleaned = "".join(cleaned.split())
+    
+    # Wrap Base64 payload into standard 64-character PEM lines
+    chunks = [cleaned[i:i+64] for i in range(0, len(cleaned), 64)]
+    pem_body = "\n".join(chunks)
+    
+    return f"-----BEGIN PRIVATE KEY-----\n{pem_body}\n-----END PRIVATE KEY-----\n"
+
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Authenticates with Google Sheets API and returns the active worksheet."""
+    """Authenticates with Google Sheets API using auto-formatted credentials."""
     info = dict(st.secrets["connections"]["gsheets"])
     
-    # Auto-fix newline escaping for RSA key parsing
     if "private_key" in info:
-        info["private_key"] = info["private_key"].replace("\\n", "\n")
+        info["private_key"] = fix_private_key(info["private_key"])
         
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -101,7 +113,7 @@ def update_schedule(user_input, sheet):
     else:
         return df, "⚠️ Could not parse line or quantity. Example: *'CM line job 719 quantity 400'*"
 
-# UI Logic
+# Interface
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
