@@ -1,35 +1,45 @@
 import streamlit as st
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from google.oauth2.service_account import Credentials
 import re
 
 st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
 st.caption("Enter updates naturally (e.g., 'Today we are producing 400 units for 719 CM')")
 
-# Required column structure
+# Required schedule columns
 REQUIRED_COLUMNS = [
     "Line", "WO_No", "QTY", "Priority", "Description", 
     "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
 ]
 
-# Fetch secrets and clean private key escape characters (\n) dynamically
-raw_secrets = dict(st.secrets["connections"]["gsheets"])
-if "private_key" in raw_secrets:
-    # Converts literal '\\n' strings into actual linebreaks expected by RSA
-    raw_secrets["private_key"] = raw_secrets["private_key"].replace("\\n", "\n")
+@st.cache_resource
+def get_gsheet_worksheet():
+    """Authenticates with Google Sheets API and returns the active worksheet."""
+    info = dict(st.secrets["connections"]["gsheets"])
+    
+    # Auto-fix newline escaping for RSA key parsing
+    if "private_key" in info:
+        info["private_key"] = info["private_key"].replace("\\n", "\n")
+        
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open_by_url(info["spreadsheet"]).sheet1
 
-# Connect using the cleaned secrets dictionary
-conn = st.connection("gsheets", type=GSheetsConnection, **raw_secrets)
-
-def load_data():
-    """Loads sheet data safely."""
+def load_data(sheet):
+    """Loads sheet data safely into a Pandas DataFrame."""
     try:
-        df = conn.read(ttl=0)
+        records = sheet.get_all_records()
+        df = pd.DataFrame(records)
     except Exception:
         df = pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-    if df is None or df.empty:
+    if df.empty:
         df = pd.DataFrame(columns=REQUIRED_COLUMNS)
     else:
         df.columns = df.columns.astype(str).str.strip()
@@ -38,10 +48,17 @@ def load_data():
                 df[col] = ""
     return df
 
-def update_schedule(user_input, df):
+def save_data(sheet, df):
+    """Overwrites the Google Sheet with updated DataFrame content."""
+    sheet.clear()
+    data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
+    sheet.update(data)
+
+def update_schedule(user_input, sheet):
+    df = load_data(sheet)
     text_upper = user_input.upper()
     
-    # Identify Machine Line
+    # Extract Machine Line
     line = None
     for l in ["CM", "NPM", "MYDATA"]:
         if l in text_upper:
@@ -52,12 +69,11 @@ def update_schedule(user_input, df):
     qty_match = re.search(r'(\d+)\s*(?:UNITS|PCS|QUANTITY)?', user_input, re.IGNORECASE)
     qty = int(qty_match.group(1)) if qty_match else None
     
-    # Extract Work Order
+    # Extract Work Order Number
     wo_match = re.search(r'(?:WO|WORK ORDER|FOR|PART)?\s*([A-Z0-9\-]{3,})', text_upper)
     wo_no = wo_match.group(1) if wo_match else "719"
 
     if line and qty:
-        # Match existing row
         mask = (df["Line"].astype(str).str.upper() == line) & (df["WO_No"].astype(str) == str(wo_no))
         
         if mask.any():
@@ -80,13 +96,12 @@ def update_schedule(user_input, df):
             df = pd.concat([df, new_row], ignore_index=True)
             msg = f"✅ Added new job to **{line}** | Work Order **{wo_no}** | QTY **{qty}**."
             
-        # Write back to Google Sheets
-        conn.update(data=df)
+        save_data(sheet, df)
         return df, msg
     else:
         return df, "⚠️ Could not parse line or quantity. Example: *'CM line job 719 quantity 400'*"
 
-# Interface
+# UI Logic
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -99,8 +114,8 @@ if prompt := st.chat_input("Type schedule update..."):
     with st.chat_message("user"):
         st.markdown(prompt)
         
-    df = load_data()
-    updated_df, response = update_schedule(prompt, df)
+    sheet = get_gsheet_worksheet()
+    updated_df, response = update_schedule(prompt, sheet)
     
     with st.chat_message("assistant"):
         st.markdown(response)
