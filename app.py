@@ -7,16 +7,23 @@ st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
 st.caption("Enter updates naturally (e.g., 'Today we are producing 400 units for 719 CM')")
 
-conn = st.connection("gsheets", type=GSheetsConnection)
-
 # Required column structure
 REQUIRED_COLUMNS = [
     "Line", "WO_No", "QTY", "Priority", "Description", 
     "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
 ]
 
+# Fetch secrets and clean private key escape characters (\n) dynamically
+raw_secrets = dict(st.secrets["connections"]["gsheets"])
+if "private_key" in raw_secrets:
+    # Converts literal '\\n' strings into actual linebreaks expected by RSA
+    raw_secrets["private_key"] = raw_secrets["private_key"].replace("\\n", "\n")
+
+# Connect using the cleaned secrets dictionary
+conn = st.connection("gsheets", type=GSheetsConnection, **raw_secrets)
+
 def load_data():
-    """Loads sheet data and ensures all required columns exist safely."""
+    """Loads sheet data safely."""
     try:
         df = conn.read(ttl=0)
     except Exception:
@@ -25,14 +32,10 @@ def load_data():
     if df is None or df.empty:
         df = pd.DataFrame(columns=REQUIRED_COLUMNS)
     else:
-        # Strip trailing whitespaces from column headers
         df.columns = df.columns.astype(str).str.strip()
-        
-        # Add any missing column automatically
         for col in REQUIRED_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
-
     return df
 
 def update_schedule(user_input, df):
@@ -54,7 +57,7 @@ def update_schedule(user_input, df):
     wo_no = wo_match.group(1) if wo_match else "719"
 
     if line and qty:
-        # Check if job already exists on that line
+        # Match existing row
         mask = (df["Line"].astype(str).str.upper() == line) & (df["WO_No"].astype(str) == str(wo_no))
         
         if mask.any():
@@ -83,7 +86,7 @@ def update_schedule(user_input, df):
     else:
         return df, "⚠️ Could not parse line or quantity. Example: *'CM line job 719 quantity 400'*"
 
-# Chat Interface Logic
+# Interface
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
