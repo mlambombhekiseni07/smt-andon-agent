@@ -17,35 +17,54 @@ REQUIRED_COLUMNS = [
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Decodes service account credentials safely and connects to Google Sheets."""
-    raw_secret = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
-    
-    # Attempt 1: Try decoding as Base64 string
-    try:
-        clean_b64 = raw_secret.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
-        missing_padding = len(clean_b64) % 4
-        if missing_padding:
-            clean_b64 += '=' * (4 - missing_padding)
-            
-        json_bytes = base64.b64decode(clean_b64)
-        json_str = json_bytes.decode("utf-8")
-        info = json.loads(json_str, strict=False)
-    except Exception:
-        # Attempt 2: Fallback if raw JSON was pasted directly
+    """Universal credential loader: supports TOML dict, raw JSON, and Base64."""
+    info = None
+
+    # Option A: Check for native TOML section
+    if "gcp_service_account" in st.secrets:
+        info = dict(st.secrets["gcp_service_account"])
+    elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        info = dict(st.secrets["connections"]["gsheets"])
+
+    # Option B: Check for Base64 or Raw JSON string
+    if not info and "GCP_SERVICE_ACCOUNT_B64" in st.secrets:
+        raw_val = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
+        clean_str = raw_val.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
+
+        # Try Base64 decode
         try:
-            info = json.loads(raw_secret, strict=False)
-        except Exception as e:
-            st.error("❌ Invalid GCP_SERVICE_ACCOUNT_B64 secret. Re-copy the full Base64 string into Secrets.")
-            raise e
-    
+            missing_padding = len(clean_str) % 4
+            if missing_padding:
+                clean_str += '=' * (4 - missing_padding)
+            decoded_bytes = base64.b64decode(clean_str)
+            info = json.loads(decoded_bytes.decode("utf-8"), strict=False)
+        except Exception:
+            # Try parsing directly as raw JSON string
+            try:
+                info = json.loads(raw_val, strict=False)
+            except Exception:
+                pass
+
+    if not info:
+        st.error(f"❌ Credentials not found or invalid. Detected keys in secrets: {list(st.secrets.keys())}")
+        st.stop()
+
+    # Convert escaped newline strings (\n) into actual line breaks
+    if "private_key" in info and isinstance(info["private_key"], str):
+        info["private_key"] = info["private_key"].replace("\\n", "\n")
+
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     client = gspread.authorize(creds)
-    
-    sheet_url = st.secrets["SPREADSHEET_URL"]
+
+    sheet_url = info.get("spreadsheet") or st.secrets.get("SPREADSHEET_URL")
+    if not sheet_url:
+        st.error("❌ Missing SPREADSHEET_URL in Secrets.")
+        st.stop()
+
     return client.open_by_url(sheet_url).sheet1
 
 def load_data(sheet):
