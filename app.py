@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import gspread
+import json
+import base64
 from google.oauth2.service_account import Credentials
 import re
 
@@ -15,15 +17,20 @@ REQUIRED_COLUMNS = [
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Authenticates with Google Sheets API using secret credentials."""
-    info = dict(st.secrets["connections"]["gsheets"])
+    """Decodes Base64 service account credentials and connects to Google Sheets."""
+    b64_str = st.secrets["GCP_SERVICE_ACCOUNT_B64"]
+    json_bytes = base64.b64decode(b64_str)
+    info = json.loads(json_bytes.decode("utf-8"))
+    
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     client = gspread.authorize(creds)
-    return client.open_by_url(info["spreadsheet"]).sheet1
+    
+    sheet_url = st.secrets["SPREADSHEET_URL"]
+    return client.open_by_url(sheet_url).sheet1
 
 def load_data(sheet):
     """Loads sheet data safely into a Pandas DataFrame."""
