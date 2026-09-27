@@ -7,11 +7,33 @@ st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
 st.caption("Enter updates naturally (e.g., 'Today we are producing 400 units for 719 CM')")
 
-# Establish Google Sheets Connection
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# Required column structure
+REQUIRED_COLUMNS = [
+    "Line", "WO_No", "QTY", "Priority", "Description", 
+    "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
+]
+
 def load_data():
-    return conn.read(ttl=0)
+    """Loads sheet data and ensures all required columns exist safely."""
+    try:
+        df = conn.read(ttl=0)
+    except Exception:
+        df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+
+    if df is None or df.empty:
+        df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+    else:
+        # Strip trailing whitespaces from column headers
+        df.columns = df.columns.astype(str).str.strip()
+        
+        # Add any missing column automatically
+        for col in REQUIRED_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+
+    return df
 
 def update_schedule(user_input, df):
     text_upper = user_input.upper()
@@ -32,8 +54,8 @@ def update_schedule(user_input, df):
     wo_no = wo_match.group(1) if wo_match else "719"
 
     if line and qty:
-        # Check if job exists
-        mask = (df["Line"] == line) & (df["W/O No"].astype(str) == str(wo_no))
+        # Check if job already exists on that line
+        mask = (df["Line"].astype(str).str.upper() == line) & (df["WO_No"].astype(str) == str(wo_no))
         
         if mask.any():
             df.loc[mask, "QTY"] = qty
@@ -42,15 +64,15 @@ def update_schedule(user_input, df):
         else:
             new_row = pd.DataFrame([{
                 "Line": line,
-                "W/O No": str(wo_no),
+                "WO_No": str(wo_no),
                 "QTY": qty,
                 "Priority": len(df[df["Line"] == line]) + 1,
-                "Product Description": f"WO-{wo_no}",
-                "Setup Time (min)": 30,
-                "Planned End Time": "16:00",
+                "Description": f"WO-{wo_no}",
+                "Setup_Min": 30,
+                "Planned_End_Time": "16:00",
                 "Status": "Running",
-                "Downtime (min)": 0,
-                "Tooling & Stencil Notes": ""
+                "Downtime_Min": 0,
+                "Tooling_Notes": ""
             }])
             df = pd.concat([df, new_row], ignore_index=True)
             msg = f"✅ Added new job to **{line}** | Work Order **{wo_no}** | QTY **{qty}**."
