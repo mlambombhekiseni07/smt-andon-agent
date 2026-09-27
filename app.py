@@ -8,7 +8,7 @@ import re
 
 st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
-st.caption("Enter updates naturally (e.g., 'Today we are producing 400 units for 719 CM')")
+st.caption("Chat with me or enter schedule updates (e.g., 'Today we are producing 400 units for 719 CM')")
 
 REQUIRED_COLUMNS = [
     "Line", "WO_No", "QTY", "Priority", "Description", 
@@ -20,18 +20,15 @@ def get_gsheet_worksheet():
     """Universal credential loader: supports TOML dict, raw JSON, and Base64."""
     info = None
 
-    # Option A: Check for native TOML section
     if "gcp_service_account" in st.secrets:
         info = dict(st.secrets["gcp_service_account"])
     elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
         info = dict(st.secrets["connections"]["gsheets"])
 
-    # Option B: Check for Base64 or Raw JSON string
     if not info and "GCP_SERVICE_ACCOUNT_B64" in st.secrets:
         raw_val = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
         clean_str = raw_val.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
 
-        # Try Base64 decode
         try:
             missing_padding = len(clean_str) % 4
             if missing_padding:
@@ -39,7 +36,6 @@ def get_gsheet_worksheet():
             decoded_bytes = base64.b64decode(clean_str)
             info = json.loads(decoded_bytes.decode("utf-8"), strict=False)
         except Exception:
-            # Try parsing directly as raw JSON string
             try:
                 info = json.loads(raw_val, strict=False)
             except Exception:
@@ -49,7 +45,6 @@ def get_gsheet_worksheet():
         st.error(f"❌ Credentials not found or invalid. Detected keys in secrets: {list(st.secrets.keys())}")
         st.stop()
 
-    # Convert escaped newline strings (\n) into actual line breaks
     if "private_key" in info and isinstance(info["private_key"], str):
         info["private_key"] = info["private_key"].replace("\\n", "\n")
 
@@ -90,22 +85,40 @@ def save_data(sheet, df):
     data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
     sheet.update(data)
 
-def update_schedule(user_input, sheet):
+def process_chat_response(user_input, sheet):
+    """Handles both conversational interactions and schedule updates."""
+    text = user_input.strip()
+    text_upper = text.upper()
+
+    # 1. Handle Greetings
+    greetings = ["HI", "HELLO", "HEY", "GOOD MORNING", "GOOD AFTERNOON", "GOOD EVENING", "GREETINGS"]
+    if any(text_upper.startswith(g) or text_upper == g for g in greetings):
+        df = load_data(sheet)
+        return df, "👋 **Hello!** I'm your SMT Supervisor Agent. How can I assist you with line updates or schedule tracking today?"
+
+    # 2. Handle Help / Capabilities
+    help_keywords = ["HELP", "WHAT CAN YOU DO", "COMMANDS", "FUNCTIONS", "WHO ARE YOU"]
+    if any(hk in text_upper for hk in help_keywords):
+        df = load_data(sheet)
+        return df, (
+            "🤖 **Here is what I can do:**\n\n"
+            "• **Update Quantities & Status:** *'Today we are producing 400 units for 719 CM'*\n"
+            "• **Add Line Jobs:** *'Set NPM line job 105 quantity to 250'*\n"
+            "• **Check Status:** Simply say *'Hi'* or ask for help anytime!"
+        )
+
+    # 3. Handle Schedule Updates
     df = load_data(sheet)
-    text_upper = user_input.upper()
     
-    # Extract Machine Line
     line = None
     for l in ["CM", "NPM", "MYDATA"]:
         if l in text_upper:
             line = l
             break
             
-    # Extract Quantity
-    qty_match = re.search(r'(\d+)\s*(?:UNITS|PCS|QUANTITY)?', user_input, re.IGNORECASE)
+    qty_match = re.search(r'(\d+)\s*(?:UNITS|PCS|QUANTITY)?', text, re.IGNORECASE)
     qty = int(qty_match.group(1)) if qty_match else None
     
-    # Extract Work Order Number
     wo_match = re.search(r'(?:WO|WORK ORDER|FOR|PART)?\s*([A-Z0-9\-]{3,})', text_upper)
     wo_no = wo_match.group(1) if wo_match else "719"
 
@@ -135,26 +148,34 @@ def update_schedule(user_input, sheet):
         save_data(sheet, df)
         return df, msg
     else:
-        return df, "⚠️ Could not parse line or quantity. Example: *'CM line job 719 quantity 400'*"
+        return df, "😊 I'm here! If you want to update the production sheet, specify the line and quantity (e.g., *'CM line job 719 quantity 400'*)."
 
-# Interface
+# Streamlit Interface
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# Initial greeting when page loads for the first time
+if len(st.session_state.messages) == 0:
+    st.session_state.messages.append({
+        "role": "assistant", 
+        "content": "👋 **Hello!** I am your SMT Supervisor Agent. You can greet me or send line updates anytime."
+    })
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Type schedule update..."):
+if prompt := st.chat_input("Type a message or schedule update..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
         
     sheet = get_gsheet_worksheet()
-    updated_df, response = update_schedule(prompt, sheet)
+    updated_df, response = process_chat_response(prompt, sheet)
     
     with st.chat_message("assistant"):
         st.markdown(response)
-        st.dataframe(updated_df, use_container_width=True)
+        if not updated_df.empty:
+            st.dataframe(updated_df, use_container_width=True)
         
     st.session_state.messages.append({"role": "assistant", "content": response})
