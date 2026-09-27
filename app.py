@@ -10,6 +10,9 @@ st.set_page_config(page_title="SMT Supervisor Agent", page_icon="🤖")
 st.title("🤖 SMT Production Chat Agent")
 st.caption("Chat with me or enter schedule updates (e.g., 'Today we are producing 400 units for 719 CM')")
 
+# Direct Spreadsheet ID extracted from your Google Sheet URL
+SPREADSHEET_KEY = "1CNxNnQ3BWaNasCsvEodPC0ejI40I-n0Z4u_omye3RUE"
+
 REQUIRED_COLUMNS = [
     "Line", "WO_No", "QTY", "Priority", "Description", 
     "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
@@ -17,21 +20,18 @@ REQUIRED_COLUMNS = [
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Universal credential loader supporting TOML dictionary, raw JSON, and Base64 formats."""
+    """Universal credential loader connecting directly via Spreadsheet Key."""
     info = None
 
-    # Option A: Native TOML section in secrets
     if "gcp_service_account" in st.secrets:
         info = dict(st.secrets["gcp_service_account"])
     elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
         info = dict(st.secrets["connections"]["gsheets"])
 
-    # Option B: Base64 or Raw JSON string in secrets
     if not info and "GCP_SERVICE_ACCOUNT_B64" in st.secrets:
         raw_val = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
         clean_str = raw_val.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
 
-        # Try Base64 decode
         try:
             missing_padding = len(clean_str) % 4
             if missing_padding:
@@ -39,7 +39,6 @@ def get_gsheet_worksheet():
             decoded_bytes = base64.b64decode(clean_str)
             info = json.loads(decoded_bytes.decode("utf-8"), strict=False)
         except Exception:
-            # Fallback: Parse raw JSON directly
             try:
                 info = json.loads(raw_val, strict=False)
             except Exception:
@@ -49,7 +48,6 @@ def get_gsheet_worksheet():
         st.error(f"❌ Credentials not found or invalid. Detected secret keys: {list(st.secrets.keys())}")
         st.stop()
 
-    # Format escaped private key newlines correctly
     if "private_key" in info and isinstance(info["private_key"], str):
         info["private_key"] = info["private_key"].replace("\\n", "\n")
 
@@ -60,21 +58,20 @@ def get_gsheet_worksheet():
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     client = gspread.authorize(creds)
 
-    sheet_url = info.get("spreadsheet") or st.secrets.get("SPREADSHEET_URL")
-    if not sheet_url:
-        st.error("❌ Missing SPREADSHEET_URL in Streamlit Secrets.")
-        st.stop()
-
-    clean_url = str(sheet_url).strip().strip('"').strip("'")
+    # Show active logged-in email in sidebar for instant verification
+    active_email = info.get("client_email", "Unknown")
+    st.sidebar.success(f"🔐 Authenticated as:\n`{active_email}`")
 
     try:
-        return client.open_by_url(clean_url).sheet1
-    except gspread.exceptions.SpreadsheetNotFound:
-        sa_email = info.get("client_email", "your service account email")
+        # Open using direct Spreadsheet ID Key
+        return client.open_by_key(SPREADSHEET_KEY).sheet1
+    except Exception as e:
         st.error(
-            f"❌ **Spreadsheet Not Found or Access Denied!**\n\n"
-            f"Make sure you have shared your Google Sheet with this service account email as **Editor**:\n\n"
-            f"`{sa_email}`"
+            f"❌ **Connection Failed!**\n\n"
+            f"The app is logged in as:\n`{active_email}`\n\n"
+            f"Make sure **this exact email** is listed as an **Editor** in your Google Sheet, "
+            f"and that **Google Drive API** is enabled in your Google Cloud Console.\n\n"
+            f"*Error details: {e}*"
         )
         st.stop()
 
@@ -166,23 +163,20 @@ def process_chat_response(user_input, sheet):
     else:
         return df, "😊 I'm here! If you want to update the production sheet, specify the line and quantity (e.g., *'CM line job 719 quantity 400'*)."
 
-# Streamlit UI State
+# Interface
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Initial assistant greeting
 if len(st.session_state.messages) == 0:
     st.session_state.messages.append({
         "role": "assistant", 
         "content": "👋 **Hello!** I am your SMT Supervisor Agent. You can greet me or send line updates anytime."
     })
 
-# Render conversation history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Process input
 if prompt := st.chat_input("Type a message or schedule update..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
