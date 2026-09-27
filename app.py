@@ -13,27 +13,33 @@ REQUIRED_COLUMNS = [
     "Setup_Min", "Planned_End_Time", "Status", "Downtime_Min", "Tooling_Notes"
 ]
 
-def fix_private_key(raw_key: str) -> str:
-    """Reconstructs standard PEM RSA private key format from mangled secret strings."""
-    cleaned = raw_key.replace("-----BEGIN PRIVATE KEY-----", "")
-    cleaned = cleaned.replace("-----END PRIVATE KEY-----", "")
-    # Remove escaped backslashes, quotes, and whitespace
-    cleaned = cleaned.replace("\\n", "").replace("\\", "").replace('"', '').replace("'", "")
-    cleaned = "".join(cleaned.split())
+def sanitize_private_key(raw_key: str) -> str:
+    """Extracts pure Base64 payload from mangled PEM string and rebuilds standard PEM format."""
+    if not raw_key:
+        return ""
     
-    # Wrap Base64 payload into standard 64-character PEM lines
-    chunks = [cleaned[i:i+64] for i in range(0, len(cleaned), 64)]
-    pem_body = "\n".join(chunks)
+    header = "-----BEGIN PRIVATE KEY-----"
+    footer = "-----END PRIVATE KEY-----"
     
-    return f"-----BEGIN PRIVATE KEY-----\n{pem_body}\n-----END PRIVATE KEY-----\n"
+    if header in raw_key and footer in raw_key:
+        # Extract content strictly between header and footer
+        content = raw_key.split(header)[1].split(footer)[0]
+        # Keep ONLY valid Base64 characters (A-Z, a-z, 0-9, +, /, =)
+        clean_b64 = re.sub(r'[^A-Za-z0-9+/=]', '', content)
+        # Wrap Base64 payload into standard 64-character PEM lines
+        chunks = [clean_b64[i:i+64] for i in range(0, len(clean_b64), 64)]
+        pem_body = "\n".join(chunks)
+        return f"{header}\n{pem_body}\n{footer}\n"
+    
+    return raw_key.replace("\\n", "\n")
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Authenticates with Google Sheets API using auto-formatted credentials."""
+    """Authenticates with Google Sheets API using sanitized credentials."""
     info = dict(st.secrets["connections"]["gsheets"])
     
     if "private_key" in info:
-        info["private_key"] = fix_private_key(info["private_key"])
+        info["private_key"] = sanitize_private_key(str(info["private_key"]))
         
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
