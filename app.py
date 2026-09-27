@@ -17,19 +17,26 @@ REQUIRED_COLUMNS = [
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Decodes Base64 service account credentials safely and connects to Google Sheets."""
-    # 1. Retrieve and clean the raw secret string
-    raw_b64 = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
-    raw_b64 = raw_b64.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
+    """Decodes service account credentials safely and connects to Google Sheets."""
+    raw_secret = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
     
-    # 2. Fix missing Base64 padding
-    missing_padding = len(raw_b64) % 4
-    if missing_padding:
-        raw_b64 += '=' * (4 - missing_padding)
-        
-    # 3. Decode payload
-    json_bytes = base64.b64decode(raw_b64)
-    info = json.loads(json_bytes.decode("utf-8"))
+    # Attempt 1: Try decoding as Base64 string
+    try:
+        clean_b64 = raw_secret.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
+        missing_padding = len(clean_b64) % 4
+        if missing_padding:
+            clean_b64 += '=' * (4 - missing_padding)
+            
+        json_bytes = base64.b64decode(clean_b64)
+        json_str = json_bytes.decode("utf-8")
+        info = json.loads(json_str, strict=False)
+    except Exception:
+        # Attempt 2: Fallback if raw JSON was pasted directly
+        try:
+            info = json.loads(raw_secret, strict=False)
+        except Exception as e:
+            st.error("❌ Invalid GCP_SERVICE_ACCOUNT_B64 secret. Re-copy the full Base64 string into Secrets.")
+            raise e
     
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
