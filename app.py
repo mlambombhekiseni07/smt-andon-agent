@@ -17,18 +17,21 @@ REQUIRED_COLUMNS = [
 
 @st.cache_resource
 def get_gsheet_worksheet():
-    """Universal credential loader: supports TOML dict, raw JSON, and Base64."""
+    """Universal credential loader supporting TOML dictionary, raw JSON, and Base64 formats."""
     info = None
 
+    # Option A: Native TOML section in secrets
     if "gcp_service_account" in st.secrets:
         info = dict(st.secrets["gcp_service_account"])
     elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
         info = dict(st.secrets["connections"]["gsheets"])
 
+    # Option B: Base64 or Raw JSON string in secrets
     if not info and "GCP_SERVICE_ACCOUNT_B64" in st.secrets:
         raw_val = str(st.secrets["GCP_SERVICE_ACCOUNT_B64"]).strip()
         clean_str = raw_val.strip('"').strip("'").replace("\n", "").replace("\r", "").replace(" ", "")
 
+        # Try Base64 decode
         try:
             missing_padding = len(clean_str) % 4
             if missing_padding:
@@ -36,15 +39,17 @@ def get_gsheet_worksheet():
             decoded_bytes = base64.b64decode(clean_str)
             info = json.loads(decoded_bytes.decode("utf-8"), strict=False)
         except Exception:
+            # Fallback: Parse raw JSON directly
             try:
                 info = json.loads(raw_val, strict=False)
             except Exception:
                 pass
 
     if not info:
-        st.error(f"❌ Credentials not found or invalid. Detected keys in secrets: {list(st.secrets.keys())}")
+        st.error(f"❌ Credentials not found or invalid. Detected secret keys: {list(st.secrets.keys())}")
         st.stop()
 
+    # Format escaped private key newlines correctly
     if "private_key" in info and isinstance(info["private_key"], str):
         info["private_key"] = info["private_key"].replace("\\n", "\n")
 
@@ -57,13 +62,24 @@ def get_gsheet_worksheet():
 
     sheet_url = info.get("spreadsheet") or st.secrets.get("SPREADSHEET_URL")
     if not sheet_url:
-        st.error("❌ Missing SPREADSHEET_URL in Secrets.")
+        st.error("❌ Missing SPREADSHEET_URL in Streamlit Secrets.")
         st.stop()
 
-    return client.open_by_url(sheet_url).sheet1
+    clean_url = str(sheet_url).strip().strip('"').strip("'")
+
+    try:
+        return client.open_by_url(clean_url).sheet1
+    except gspread.exceptions.SpreadsheetNotFound:
+        sa_email = info.get("client_email", "your service account email")
+        st.error(
+            f"❌ **Spreadsheet Not Found or Access Denied!**\n\n"
+            f"Make sure you have shared your Google Sheet with this service account email as **Editor**:\n\n"
+            f"`{sa_email}`"
+        )
+        st.stop()
 
 def load_data(sheet):
-    """Loads sheet data safely into a Pandas DataFrame."""
+    """Loads Google Sheet data safely into a Pandas DataFrame."""
     try:
         records = sheet.get_all_records()
         df = pd.DataFrame(records)
@@ -86,17 +102,17 @@ def save_data(sheet, df):
     sheet.update(data)
 
 def process_chat_response(user_input, sheet):
-    """Handles both conversational interactions and schedule updates."""
+    """Handles conversational greetings, help commands, and schedule updates."""
     text = user_input.strip()
     text_upper = text.upper()
 
-    # 1. Handle Greetings
+    # 1. Greetings
     greetings = ["HI", "HELLO", "HEY", "GOOD MORNING", "GOOD AFTERNOON", "GOOD EVENING", "GREETINGS"]
     if any(text_upper.startswith(g) or text_upper == g for g in greetings):
         df = load_data(sheet)
         return df, "👋 **Hello!** I'm your SMT Supervisor Agent. How can I assist you with line updates or schedule tracking today?"
 
-    # 2. Handle Help / Capabilities
+    # 2. Help and Capabilities
     help_keywords = ["HELP", "WHAT CAN YOU DO", "COMMANDS", "FUNCTIONS", "WHO ARE YOU"]
     if any(hk in text_upper for hk in help_keywords):
         df = load_data(sheet)
@@ -104,10 +120,10 @@ def process_chat_response(user_input, sheet):
             "🤖 **Here is what I can do:**\n\n"
             "• **Update Quantities & Status:** *'Today we are producing 400 units for 719 CM'*\n"
             "• **Add Line Jobs:** *'Set NPM line job 105 quantity to 250'*\n"
-            "• **Check Status:** Simply say *'Hi'* or ask for help anytime!"
+            "• **Check Status / Chat:** Simply say *'Hi'* or ask for help anytime!"
         )
 
-    # 3. Handle Schedule Updates
+    # 3. Schedule Processing
     df = load_data(sheet)
     
     line = None
@@ -150,21 +166,23 @@ def process_chat_response(user_input, sheet):
     else:
         return df, "😊 I'm here! If you want to update the production sheet, specify the line and quantity (e.g., *'CM line job 719 quantity 400'*)."
 
-# Streamlit Interface
+# Streamlit UI State
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Initial greeting when page loads for the first time
+# Initial assistant greeting
 if len(st.session_state.messages) == 0:
     st.session_state.messages.append({
         "role": "assistant", 
         "content": "👋 **Hello!** I am your SMT Supervisor Agent. You can greet me or send line updates anytime."
     })
 
+# Render conversation history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# Process input
 if prompt := st.chat_input("Type a message or schedule update..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
